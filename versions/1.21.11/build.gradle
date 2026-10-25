@@ -1,0 +1,71 @@
+plugins {
+    id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+    id 'maven-publish'
+}
+
+base {
+    archivesName = "AutoGearV2-2.0-1.21.11"
+}
+version = ""
+group = project.maven_group
+
+loom {
+
+    runs {
+        client {
+            programArgs "--username", "gigabyte11"
+        }
+    }
+
+    mods {
+        "autogear" {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings loom.officialMojangMappings()
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+}
+
+// The mod is client-only; compile client implementation in the main remappable source set.
+sourceSets {
+    main {
+        java.srcDir "src/client/java"
+        resources.srcDir "src/client/resources"
+    }
+}
+
+processResources {
+    inputs.property "version", "2.0"
+    filteringCharset = 'UTF-8'
+    filesMatching("fabric.mod.json") {
+        expand "version": "2.0"
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 21
+}
+
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+jar {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from("LICENSE") {
+        rename { "${it}_AutoGearV2-2.0-1.21.11" }
+    }
+}
+
+

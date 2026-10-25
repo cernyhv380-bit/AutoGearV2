@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "autogear",
+  "version": "${version}",
+  "name": "AutoGearV2",
+  "description": "Сохранение и загрузка наборов инвентаря по бинду.",
+  "authors": ["Gigabyteq"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "main": ["com.autogear.AutoGear"],
+    "client": ["com.autogear.AutoGearClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.14",
+    "minecraft": "~1.21.4",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
+
