@@ -1,0 +1,10 @@
+.gradle
+build
+run
+.idea
+*.iml
+out
+.vscode
+
+logs/
+gradle-error.log
