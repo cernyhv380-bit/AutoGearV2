@@ -6,16 +6,20 @@ import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.Tag;
 
 import java.io.IOException;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Приводит сеты к правилам AutoGear.
  *
- * <p>Вызывается при запуске игры и при каждом открытии меню, поэтому любой сет,
- * положенный в {@code AutoGear/ready/} руками (например скачанный из канала),
+ * <p>Вызывается при запуске игры и при открытии меню. Результаты кэшируются по
+ * метаданным файлов, поэтому неизменённые наборы не разбираются повторно. Любой
+ * новый или изменённый сет в {@code AutoGear/ready/} (например скачанный из канала)
  * автоматически проходит обработку:
  * <ul>
  *   <li>вырезаются {@code knockback} (отдача) и {@code thorns} (шипы);</li>
@@ -31,6 +35,13 @@ import java.util.Map;
  * повторный прогон ничего не дублирует.
  */
 public final class ReadyNormalizer {
+
+    private record FileMetadata(long size, FileTime lastModified) {}
+
+    private record ProcessedFile(FileMetadata file, FileMetadata trimSource, boolean vanishingCurse) {}
+
+    /** Не читаем повторно NBT наборов, которые не менялись с последней обработки. */
+    private static final Map<Path, ProcessedFile> PROCESSED_FILES = new HashMap<>();
 
     /** Зачарования, которых не должно быть в готовых сетах. */
     private static final String[] BANNED = {"knockback", "thorns"};
@@ -61,20 +72,61 @@ public final class ReadyNormalizer {
      */
     public static int normalizeAll(boolean vanishingCurse) {
         Map<String, String[]> trim = readTrimFromPvp();
+        FileMetadata trimSource = fileMetadata(SetStorage.setsDir().resolve("pvp.nbt"));
         int changed = 0;
 
         for (String name : SetStorage.listReadySets()) {
             Path path = SetStorage.resolveSetPath(name);
             if (path == null) continue;
-            if (normalizeFile(path, trim, vanishingCurse, true)) changed++;
+            if (normalizeIfNeeded(path, trim, trimSource, vanishingCurse, true)) changed++;
         }
 
         for (String name : SetStorage.listSets()) {
             Path path = SetStorage.setsDir().resolve(name + ".nbt");
             if (!Files.exists(path)) continue;
-            if (normalizeFile(path, trim, vanishingCurse, false)) changed++;
+            if (normalizeIfNeeded(path, trim, trimSource, vanishingCurse, false)) changed++;
         }
         return changed;
+    }
+
+    private static boolean normalizeIfNeeded(Path path, Map<String, String[]> trim,
+                                             FileMetadata trimSource, boolean curse, boolean full) {
+        Path key = path.toAbsolutePath().normalize();
+        FileMetadata before = fileMetadata(key);
+        if (before == null) {
+            PROCESSED_FILES.remove(key);
+            return false;
+        }
+
+        ProcessedFile previous = PROCESSED_FILES.get(key);
+        if (previous != null && previous.file().equals(before)
+                && Objects.equals(previous.trimSource(), trimSource)
+                && previous.vanishingCurse() == curse) {
+            return false;
+        }
+
+        Boolean wasChanged = normalizeFile(key, trim, curse, full);
+        if (wasChanged == null) {
+            PROCESSED_FILES.remove(key);
+            return false;
+        }
+
+        FileMetadata after = fileMetadata(key);
+        if (after != null) {
+            PROCESSED_FILES.put(key, new ProcessedFile(after, trimSource, curse));
+        } else {
+            PROCESSED_FILES.remove(key);
+        }
+        return wasChanged;
+    }
+
+    private static FileMetadata fileMetadata(Path path) {
+        try {
+            BasicFileAttributes attributes = Files.readAttributes(path, BasicFileAttributes.class);
+            return new FileMetadata(attributes.size(), attributes.lastModifiedTime());
+        } catch (IOException ignored) {
+            return null;
+        }
     }
 
     /**
@@ -113,13 +165,13 @@ public final class ReadyNormalizer {
         return out;
     }
 
-    private static boolean normalizeFile(Path path, Map<String, String[]> trim,
+    private static Boolean normalizeFile(Path path, Map<String, String[]> trim,
                                          boolean curse, boolean full) {
         CompoundTag root;
         try {
             root = NbtIo.read(path);
         } catch (IOException e) {
-            return false;
+            return null;
         }
         if (root == null || !root.contains("Items")) return false;
 
@@ -134,7 +186,7 @@ public final class ReadyNormalizer {
         try {
             NbtIo.write(root, path);
         } catch (IOException e) {
-            return false;
+            return null;
         }
         return true;
     }

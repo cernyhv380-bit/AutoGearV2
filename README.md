@@ -49,7 +49,7 @@
 
 | Minecraft | Fabric Loader | Fabric API | Файл |
 |---|---:|---:|---|
-| 26.3 | 0.19.5 | 0.164.0+26.3 | [Скачать JAR](release-assets/AutoGearV2-2.0.0-mc26.3.jar) |
+| 26.3 | 0.19.5 | 0.164.0+26.3 | [Скачать JAR](release-assets/AutoGearV2-2.0.1-mc26.3.jar) |
 | 1.21.11 | 0.19.3 | 0.141.6+1.21.11 | [Скачать JAR](release-assets/AutoGearV2-2.0.0-mc1.21.11.jar) |
 | 1.21.4 | 0.16.14 | 0.119.4+1.21.4 | [Скачать JAR](release-assets/AutoGearV2-2.0.0-mc1.21.4.jar) |
 | 1.20.1 | 0.16.14 | 0.92.12+1.20.1 | [Скачать JAR](release-assets/AutoGearV2-2.0.0-mc1.20.1.jar) |
