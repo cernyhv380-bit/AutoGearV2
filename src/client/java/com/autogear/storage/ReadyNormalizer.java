@@ -167,28 +167,30 @@ public final class ReadyNormalizer {
 
     private static Boolean normalizeFile(Path path, Map<String, String[]> trim,
                                          boolean curse, boolean full) {
-        CompoundTag root;
-        try {
-            root = NbtIo.read(path);
-        } catch (IOException e) {
-            return null;
-        }
-        if (root == null || !root.contains("Items")) return false;
+        synchronized (SetStorage.class) {
+            CompoundTag root;
+            try {
+                root = NbtIo.read(path);
+            } catch (IOException e) {
+                return null;
+            }
+            if (root == null || !root.contains("Items")) return false;
 
-        ListTag items = root.getListOrEmpty("Items");
-        boolean changed = false;
-        for (int i = 0; i < items.size(); i++) {
-            if (!(items.get(i) instanceof CompoundTag item) || item.isEmpty()) continue;
-            if (normalizeItem(item, trim, curse, full)) changed = true;
-        }
-        if (!changed) return false;
+            ListTag items = root.getListOrEmpty("Items");
+            boolean changed = false;
+            for (int i = 0; i < items.size(); i++) {
+                if (!(items.get(i) instanceof CompoundTag item) || item.isEmpty()) continue;
+                if (normalizeItem(item, trim, curse, full)) changed = true;
+            }
+            if (!changed) return false;
 
-        try {
-            NbtIo.write(root, path);
-        } catch (IOException e) {
-            return null;
+            try {
+                NbtIo.write(root, path);
+            } catch (IOException e) {
+                return null;
+            }
+            return true;
         }
-        return true;
     }
 
     private static boolean normalizeItem(CompoundTag item, Map<String, String[]> trimMap,

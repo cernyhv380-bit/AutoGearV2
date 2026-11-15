@@ -1,5 +1,6 @@
 package com.autogear.storage;
 
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtIo;
 import org.junit.jupiter.api.BeforeEach;
@@ -78,6 +79,28 @@ class SetStorageTest {
         assertFalse(Files.exists(SetStorage.setsDir().resolve("pvp.nbt")));
         assertTrue(Files.exists(SetStorage.setsDir().resolve("arena.nbt")));
         assertEquals("arena", SetStorage.getActiveSet());
+    }
+
+    @Test
+    void setKeyBindingsPersistAndFollowSetChanges() throws IOException {
+        touch("pvp");
+        touch("duel");
+        SetStorage.setActiveSet("pvp");
+        assertTrue(SetStorage.setKeyBinding("pvp", InputConstants.KEY_MINUS));
+        assertTrue(SetStorage.setKeyBinding("duel", InputConstants.KEY_INSERT));
+        SetStorage.setRoot(root);
+        assertEquals(java.util.Map.of("pvp", InputConstants.KEY_MINUS, "duel", InputConstants.KEY_INSERT),
+                SetStorage.getSetKeyBindings());
+
+        assertTrue(SetStorage.setKeyBinding("pvp", InputConstants.KEY_INSERT));
+        assertTrue(SetStorage.renameSet("pvp", "arena"));
+        SetStorage.setRoot(root);
+        assertEquals(java.util.Map.of("arena", InputConstants.KEY_INSERT), SetStorage.getSetKeyBindings());
+        assertEquals("arena", SetStorage.getActiveSet());
+
+        assertTrue(SetStorage.deleteSet("arena"));
+        SetStorage.setRoot(root);
+        assertTrue(SetStorage.getSetKeyBindings().isEmpty());
     }
 
     @Test

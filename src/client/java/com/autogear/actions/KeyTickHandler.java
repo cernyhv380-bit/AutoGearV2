@@ -17,6 +17,8 @@ public final class KeyTickHandler {
         TemporaryCreative.tick(client);
         InventoryClear.tick(client);
 
+        SetHotkeys.tick(client);
+
         if (client.player == null) return;
 
         // F4 — грузим активный сет

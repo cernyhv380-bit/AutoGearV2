@@ -3,11 +3,12 @@ plugins {
     id 'maven-publish'
 }
 
-base {
-    archivesName = "AutoGearV2-2.0-1.21.4"
-}
-version = ""
+version = project.mod_version
 group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
 
 loom {
 
@@ -44,10 +45,10 @@ sourceSets {
 }
 
 processResources {
-    inputs.property "version", "2.0"
+    inputs.property "version", project.version
     filteringCharset = 'UTF-8'
     filesMatching("fabric.mod.json") {
-        expand "version": "2.0"
+        expand "version": inputs.properties.version
     }
 }
 
@@ -64,7 +65,7 @@ java {
 jar {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     from("LICENSE") {
-        rename { "${it}_AutoGearV2-2.0-1.21.4" }
+        rename { "${it}_${project.archives_base_name}" }
     }
 }
 

@@ -1,8 +1,9 @@
 package com.autogear.menu;
 
 import com.autogear.actions.GearActions;
-import com.autogear.storage.ReadyNormalizer;
+import com.autogear.actions.SetHotkeys;
 import com.autogear.storage.SetStorage;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.Util;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -18,8 +19,12 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Меню AutoGear на ванильных виджетах: категории сетов, поиск, добавление своего сета,
@@ -58,8 +63,16 @@ public final class AutoGearMenuScreen extends Screen {
     private Category category = Category.READY;
     private String query = "";
 
+    private MenuSets sets = MenuSets.EMPTY;
+    private CompletableFuture<MenuSets> catalogTask;
+    private CompletableFuture<ItemStack[]> previewTask;
+    private String activeSet;
+    private String bindingSet;
+    private String bindingHint;
     private String previewName;
     private ItemStack[] previewItems;
+
+    private boolean vanishingCurse;
 
     public AutoGearMenuScreen() {
         super(Component.literal(TITLE));
@@ -67,6 +80,11 @@ public final class AutoGearMenuScreen extends Screen {
 
     @Override
     protected void init() {
+        if (this.catalogTask == null && this.sets == MenuSets.EMPTY) {
+            this.activeSet = SetStorage.getActiveSet();
+            this.vanishingCurse = SetStorage.isVanishingCurseEnabled();
+            refreshSets(null);
+        }
 
         int leftW = leftWidth();
         this.list = new SetList();
@@ -175,9 +193,9 @@ public final class AutoGearMenuScreen extends Screen {
     }
 
     /** Надпись тумблера с текущим состоянием. */
-    private static Component curseLabel() {
+    private Component curseLabel() {
         return Component.literal("Проклятие утраты: "
-                + (SetStorage.isVanishingCurseEnabled() ? "ВКЛ" : "ВЫКЛ"));
+                + (this.vanishingCurse ? "ВКЛ" : "ВЫКЛ"));
     }
 
     private int curseButtonX() { return Math.max(10, this.width - 176); }
@@ -196,12 +214,10 @@ public final class AutoGearMenuScreen extends Screen {
     }
 
     private void toggleCurse(Button button) {
-        boolean next = !SetStorage.isVanishingCurseEnabled();
-        SetStorage.setVanishingCurseEnabled(next);
-        ReadyNormalizer.normalizeAll(next);
+        this.vanishingCurse = !this.vanishingCurse;
+        SetStorage.setVanishingCurseEnabled(this.vanishingCurse);
         button.setMessage(curseLabel());
-        this.previewName = null;
-        if (this.list != null) this.list.reload();
+        refreshSets(this.vanishingCurse);
     }
 
     private void addNamedSet() {
@@ -209,19 +225,17 @@ public final class AutoGearMenuScreen extends Screen {
                 ? "" : this.nameBox.getValue().trim();
         if (name.isEmpty()) return;
         GearActions.saveCurrentAs(name);
-        this.previewName = null;
-        this.list.reload();
+        refreshSets(null);
     }
 
     private void saveCurrentSet() {
         GearActions.saveCurrentAsNew();
-        this.previewName = null;
-        this.list.reload();
+        refreshSets(null);
     }
 
     private void loadSelectedSet() {
         String name = this.list == null ? null : this.list.selectedName();
-        if (name == null) return;
+        if (name == null || this.catalogTask != null) return;
         this.onClose();
         GearActions.loadFromMenu(name);
     }
@@ -230,6 +244,7 @@ public final class AutoGearMenuScreen extends Screen {
         String name = this.list == null ? null : this.list.selectedName();
         if (name != null) {
             GearActions.select(name);
+            this.activeSet = SetStorage.getActiveSet();
             this.list.reload();
         }
     }
@@ -237,10 +252,13 @@ public final class AutoGearMenuScreen extends Screen {
     private void deleteCurrentSet() {
         String name = this.list == null ? null : this.list.selectedName();
         if (name != null) {
-            SetStorage.deleteSet(name);
-            if (name.equals(SetStorage.getActiveSet())) SetStorage.setActiveSet(null);
-            this.previewName = null;
-            this.list.reload();
+            if (SetStorage.deleteSet(name)) {
+                if (name.equals(this.activeSet)) {
+                    SetStorage.setActiveSet(null);
+                    this.activeSet = null;
+                }
+                refreshSets(null);
+            }
         }
     }
 
@@ -266,7 +284,6 @@ public final class AutoGearMenuScreen extends Screen {
     private void setCategory(Category newCategory) {
         if (this.category == newCategory) return;
         this.category = newCategory;
-        this.previewName = null;
         this.list.reload();
         updateButtons();
     }
@@ -286,6 +303,10 @@ public final class AutoGearMenuScreen extends Screen {
     /** Route menu actions directly by their visible bounds, independent of widget event dispatch. */
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (button == InputConstants.MOUSE_BUTTON_MIDDLE && this.list != null) {
+            return beginBinding(this.list.nameAt(mouseX, mouseY));
+        }
+        this.bindingSet = null;
         if (button == 0) {
             int tabY = LIST_TOP - 24;
             if (inside(mouseX, mouseY, 10, tabY, TAB_W, TAB_H)) {
@@ -356,13 +377,20 @@ public final class AutoGearMenuScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
+        if (this.catalogTask != null && this.catalogTask.isDone()) {
+            this.sets = this.catalogTask.getNow(this.sets);
+            this.catalogTask = null;
+            this.list.reload();
+            clearPreview();
+        }
+        updatePreview(this.list.selectedName());
         updateButtons();
     }
 
     private void updateButtons() {
         if (this.list == null) return;
         boolean hasSelection = this.list.selectedName() != null;
-        if (this.loadBtn != null) this.loadBtn.active = hasSelection;
+        if (this.loadBtn != null) this.loadBtn.active = hasSelection && this.catalogTask == null;
         if (this.selectBtn != null) this.selectBtn.active = hasSelection;
         if (this.deleteBtn != null) this.deleteBtn.active = hasSelection;
     }
@@ -378,14 +406,28 @@ public final class AutoGearMenuScreen extends Screen {
 
         g.fill(px, py, px + pw, py + ph, 0x66000000);
 
-        String name = this.list.selectedName();
-        if (name == null) {
-            g.drawString(this.font, "Нет выбранного сета", px + 8, py + 8, 0xFFAAAAAA);
+        if (this.bindingSet != null) {
+            g.drawString(this.font, "Бинд: " + this.bindingSet, px + 8, py + 8, 0xFFFFFFFF);
+            int hintY = py + 24;
+            for (var line : this.font.split(Component.literal(this.bindingHint), pw - 16)) {
+                g.drawString(this.font, line, px + 8, hintY, 0xFFAAAAAA);
+                hintY += this.font.lineHeight;
+            }
             return;
         }
 
-        ensurePreview(name);
+        String name = this.list.selectedName();
+        if (name == null) {
+            g.drawString(this.font, this.catalogTask != null ? "Загрузка списка сетов..." : "Нет выбранного сета", px + 8, py + 8, 0xFFAAAAAA);
+            return;
+        }
+
         g.drawString(this.font, "Сет: " + name, px + 8, py + 8, 0xFFFFFFFF);
+
+        if (!name.equals(this.previewName) || this.previewTask != null || this.catalogTask != null) {
+            g.drawString(this.font, "Загрузка предпросмотра...", px + 8, py + 24, 0xFFAAAAAA);
+            return;
+        }
 
         if (this.previewItems == null) {
             g.drawString(this.font, "Не удалось прочитать содержимое", px + 8, py + 24, 0xFFAAAAAA);
@@ -430,15 +472,76 @@ public final class AutoGearMenuScreen extends Screen {
         }
     }
 
-    private void ensurePreview(String name) {
-        if (name.equals(this.previewName)) return;
-        this.previewName = name;
-        this.previewItems = null;
+    private void refreshSets(Boolean normalizeCurse) {
+        clearPreview();
+        MenuSets previous = this.sets;
+        this.catalogTask = MenuSets.refresh(normalizeCurse).exceptionally(error -> previous);
+    }
 
-        Minecraft mc = Minecraft.getInstance();
-        RegistryAccess reg = mc.level == null ? null : mc.level.registryAccess();
-        if (reg != null) {
-            this.previewItems = SetStorage.loadSet(name, reg);
+    private void clearPreview() {
+        if (this.previewTask != null) this.previewTask.cancel(false);
+        this.previewTask = null;
+        this.previewName = null;
+        this.previewItems = null;
+    }
+
+    private void updatePreview(String name) {
+        if (this.catalogTask != null) return;
+        if (!Objects.equals(name, this.previewName)) {
+            clearPreview();
+            this.previewName = name;
+            RegistryAccess registries = this.minecraft.level == null ? null : this.minecraft.level.registryAccess();
+            if (name != null && registries != null) {
+                this.previewTask = MenuSets.preview(name, registries);
+            }
+        }
+        if (this.previewTask != null && this.previewTask.isDone()) {
+            this.previewItems = this.previewTask.isCompletedExceptionally() ? null : this.previewTask.getNow(null);
+            this.previewTask = null;
+        }
+    }
+
+    @Override
+    public void removed() {
+        clearPreview();
+        super.removed();
+    }
+
+    private boolean beginBinding(String name) {
+        if (name == null) return false;
+        this.bindingSet = name;
+        this.bindingHint = "Нажми клавишу. Delete или Esc — снять бинд.";
+        setFocused(null);
+        return true;
+    }
+
+    @Override
+    public boolean keyPressed(int key, int scanCode, int modifiers) {
+        if (this.bindingSet == null) return super.keyPressed(key, scanCode, modifiers);
+        boolean remove = key == InputConstants.KEY_DELETE || key == InputConstants.KEY_ESCAPE;
+        if (key > 0) {
+            if (!remove && SetHotkeys.isReserved(key)) {
+                this.bindingHint = "Клавиша занята. Выбери другую.";
+            } else if (SetStorage.setKeyBinding(this.bindingSet, remove ? null : key)) {
+                this.bindingSet = null;
+            } else {
+                this.bindingHint = "Не удалось сохранить изменение бинда. Попробуй ещё раз.";
+            }
+        }
+        return true;
+    }
+
+    private void drawSetLabel(GuiGraphics g, String name, String label, int x, int right, int y, int color) {
+        Integer key = SetStorage.getSetKeyBindings().get(name);
+        String bind = name.equals(this.bindingSet) ? "[...]" : key == null ? "" : "[" + SetHotkeys.label(key) + "]";
+        int labelWidth = right - x;
+        if (!bind.isEmpty()) {
+            int bindX = right - this.font.width(bind);
+            g.drawString(this.font, bind, bindX, y, 0xFFFFD479);
+            labelWidth = bindX - x - 6;
+        }
+        if (labelWidth > 0) {
+            g.drawString(this.font, this.font.plainSubstrByWidth(label, labelWidth), x, y, color);
         }
     }
 
@@ -476,22 +579,14 @@ public final class AutoGearMenuScreen extends Screen {
             String previouslySelected = this.selected;
             this.names.clear();
 
-            String active = SetStorage.getActiveSet();
             boolean searching = !query.isEmpty();
-            List<String> source = new ArrayList<>();
-            if (searching) {
-                // Поиск общий: и «Свои»/«По F8», и «Готовые» — независимо от вкладки.
-                source.addAll(SetStorage.listSets());
-                source.addAll(SetStorage.listReadySets());
-            } else if (AutoGearMenuScreen.this.category == Category.READY) {
-                source.addAll(SetStorage.listReadySets());
-            } else {
-                source.addAll(SetStorage.listSets());
-            }
+            Set<String> source = new LinkedHashSet<>();
+            if (searching || category != Category.READY) source.addAll(sets.own());
+            if (searching || category == Category.READY) source.addAll(sets.ready());
             for (String name : source) {
                 if (!searching && !inCategory(name)) continue;
                 if (searching && !name.toLowerCase(Locale.ROOT).contains(query)) continue;
-                if (!this.names.contains(name)) this.names.add(name);
+                this.names.add(name);
             }
 
             this.selected = this.names.contains(previouslySelected)
@@ -520,18 +615,18 @@ public final class AutoGearMenuScreen extends Screen {
             this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxScroll()));
         }
 
+        String nameAt(double mouseX, double mouseY) {
+            if (!inside(mouseX, mouseY, 0, LIST_TOP, leftWidth(), listBottom() - LIST_TOP)) return null;
+            int row = (int) ((mouseY - LIST_TOP) / LIST_ROW);
+            int index = this.scrollOffset + row;
+            return row < visibleRows() && index < this.names.size() ? this.names.get(index) : null;
+        }
+
         boolean selectAt(double mouseX, double mouseY) {
-            int width = leftWidth();
-            if (!inside(mouseX, mouseY, 0, LIST_TOP, width, listBottom() - LIST_TOP)) return false;
-            int index = this.scrollOffset + (int) ((mouseY - LIST_TOP) / LIST_ROW);
-            if (index >= 0 && index < this.names.size()) {
-                String next = this.names.get(index);
-                if (!next.equals(this.selected)) {
-                    this.selected = next;
-                    previewName = null;
-                    updateButtons();
-                }
-            }
+            String next = nameAt(mouseX, mouseY);
+            if (next == null) return false;
+            this.selected = next;
+            updateButtons();
             return true;
         }
 
@@ -555,7 +650,6 @@ public final class AutoGearMenuScreen extends Screen {
                 g.drawString(font, "В этой категории сетов нет", 12, LIST_TOP + 8, 0xFFAAAAAA);
             } else {
                 int end = Math.min(this.names.size(), this.scrollOffset + visible);
-                String active = SetStorage.getActiveSet();
                 for (int index = this.scrollOffset; index < end; index++) {
                     int y = LIST_TOP + (index - this.scrollOffset) * LIST_ROW;
                     String name = this.names.get(index);
@@ -565,9 +659,9 @@ public final class AutoGearMenuScreen extends Screen {
                     } else if (hovered) {
                         g.fill(2, y, width - 2, y + LIST_ROW - 1, 0x66444444);
                     }
-                    String label = name.equals(active) ? name + "  (активный)" : name;
-                    int color = name.equals(active) ? 0xFFB8E986 : 0xFFFFFFFF;
-                    g.drawString(font, label, 8, y + (LIST_ROW - 9) / 2, color);
+                    String label = name.equals(activeSet) ? name + "  (активный)" : name;
+                    int color = name.equals(activeSet) ? 0xFFB8E986 : 0xFFFFFFFF;
+                    drawSetLabel(g, name, label, 8, width - 10, y + (LIST_ROW - 9) / 2, color);
                 }
             }
 

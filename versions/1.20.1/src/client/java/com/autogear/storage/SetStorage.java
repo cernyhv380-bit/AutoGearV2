@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.nbt.CompoundTag;
@@ -22,7 +23,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -34,6 +37,8 @@ import java.util.stream.Stream;
 public final class SetStorage {
 
     public static final int SLOT_COUNT = 41;
+    // Last supported GLFW key code (GLFW_KEY_LAST).
+    private static final int MAX_KEY_CODE = 348;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Pattern SET_NUM = Pattern.compile("^set_(\\d+)$");
@@ -43,9 +48,13 @@ public final class SetStorage {
     // ============================ Пути ============================
 
     private static Path rootOverride;
+    private static Map<String, Integer> setKeyBindings;
 
     /** Для тестов: подменить корневую папку данных. */
-    static void setRoot(Path root) { rootOverride = root; }
+    static void setRoot(Path root) {
+        rootOverride = root;
+        setKeyBindings = null;
+    }
 
     public static Path rootDir() {
         if (rootOverride != null) return rootOverride;
@@ -195,6 +204,57 @@ public final class SetStorage {
         return out;
     }
 
+
+    /** Returns the per-set shortcuts without reading the config on every tick. */
+    public static Map<String, Integer> getSetKeyBindings() {
+        if (setKeyBindings != null) return setKeyBindings;
+        Map<String, Integer> keys = new LinkedHashMap<>();
+        JsonObject cfg = readConfig();
+        if (cfg.has("setKeyBindings") && cfg.get("setKeyBindings").isJsonObject()) {
+            cfg.getAsJsonObject("setKeyBindings").entrySet().forEach(entry -> {
+                JsonElement value = entry.getValue();
+                if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()) {
+                    try {
+                        InputConstants.Key input = InputConstants.getKey(value.getAsString());
+                        int key = input.getValue();
+                        if (input.getType() == InputConstants.Type.KEYSYM && key > 0 && key <= MAX_KEY_CODE
+                                && !keys.containsValue(key)) {
+                            keys.put(entry.getKey(), key);
+                        }
+                    } catch (IllegalArgumentException ignored) {}
+                }
+            });
+        }
+        setKeyBindings = Collections.unmodifiableMap(keys);
+        return setKeyBindings;
+    }
+
+    public static boolean setKeyBinding(String name, Integer key) {
+        Map<String, Integer> keys = new LinkedHashMap<>(getSetKeyBindings());
+        if (key == null) {
+            keys.remove(name);
+        } else {
+            keys.values().removeIf(key::equals);
+            keys.put(name, key);
+        }
+        return writeSetKeyBindings(keys);
+    }
+
+    private static boolean writeSetKeyBindings(Map<String, Integer> keys) {
+        if (keys.equals(getSetKeyBindings())) return true;
+        JsonObject cfg = readConfig();
+        if (keys.isEmpty()) cfg.remove("setKeyBindings");
+        else {
+            JsonObject stored = new JsonObject();
+            keys.forEach((name, key) -> stored.addProperty(name,
+                    InputConstants.Type.KEYSYM.getOrCreate(key).getName()));
+            cfg.add("setKeyBindings", stored);
+        }
+        if (!writeConfig(cfg)) return false;
+        setKeyBindings = Collections.unmodifiableMap(keys);
+        return true;
+    }
+
     private static JsonObject readConfig() {
         Path p = configFile();
         if (!Files.exists(p)) return new JsonObject();
@@ -205,11 +265,14 @@ public final class SetStorage {
         } catch (Exception e) { return new JsonObject(); }
     }
 
-    private static void writeConfig(JsonObject o) {
+    private static boolean writeConfig(JsonObject o) {
         try {
             Files.createDirectories(rootDir());
             Files.writeString(configFile(), GSON.toJson(o), StandardCharsets.UTF_8);
-        } catch (IOException ignored) {}
+            return true;
+        } catch (IOException ignored) {
+            return false;
+        }
     }
 
     // ============================ Sets: список ============================
@@ -286,7 +349,7 @@ public final class SetStorage {
     }
 
     /** Записывает NBT-файл сета (перезаписывает существующий). Возвращает null при успехе. */
-    static String writeSetTag(String name, CompoundTag root) {
+    static synchronized String writeSetTag(String name, CompoundTag root) {
         try {
             Files.createDirectories(setsDir());
             NbtIo.write(root, setsDir().resolve(name + ".nbt").toFile());
@@ -307,7 +370,10 @@ public final class SetStorage {
         if (p == null) return null;
 
         try {
-            CompoundTag root = NbtIo.read(p.toFile());
+            CompoundTag root;
+            synchronized (SetStorage.class) {
+                root = NbtIo.read(p.toFile());
+            }
             if (root == null || !root.contains("Items")) return null;
 
             ListTag list = root.getList("Items", Tag.TAG_COMPOUND);
@@ -349,15 +415,18 @@ public final class SetStorage {
         return stack;
     }
 
-    public static boolean deleteSet(String name) {
+    public static synchronized boolean deleteSet(String name) {
         if (name == null || name.isEmpty()) return false;
         Path p = resolveSetPath(name);
         if (p == null) return false;
-        try { return Files.deleteIfExists(p); }
-        catch (IOException e) { return false; }
+        try {
+            if (!Files.deleteIfExists(p)) return false;
+            setKeyBinding(name, null);
+            return true;
+        } catch (IOException e) { return false; }
     }
 
-    public static boolean renameSet(String oldName, String newName) {
+    public static synchronized boolean renameSet(String oldName, String newName) {
         if (oldName == null || newName == null) return false;
         if (oldName.isEmpty() || newName.isEmpty()) return false;
         Path src = resolveSetPath(oldName);
@@ -367,6 +436,12 @@ public final class SetStorage {
         try {
             Files.move(src, dst);
             if (oldName.equals(getActiveSet())) setActiveSet(newName);
+            Map<String, Integer> keys = new LinkedHashMap<>(getSetKeyBindings());
+            Integer key = keys.remove(oldName);
+            if (key != null) {
+                keys.put(newName, key);
+                writeSetKeyBindings(keys);
+            }
             return true;
         } catch (IOException e) { return false; }
     }
